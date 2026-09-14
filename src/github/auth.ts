@@ -1,33 +1,47 @@
 /**
  * auth.ts — GitHub authentication resolution.
  *
- * Phase 1: reads GITHUB_TOKEN from environment.
- * Falls back to `gh auth token` if the env var is not set.
+ * Precedence:
+ * 1. GITHUB_TOKEN environment variable (CI / manual overrides)
+ * 2. Stored config at ~/.repo-guardian/config.json (set via `repo-guardian auth login`)
+ * 3. `gh auth token` (if GitHub CLI is installed and logged in)
  */
 
 import { runCommand } from '../utils/shell.js';
+import { loadStoredConfig } from './config.js';
 import { logger } from '../utils/logger.js';
 
 export interface GitHubAuth {
   token: string;
-  source: 'env' | 'gh-cli';
+  source: 'env' | 'config' | 'gh-cli';
+  user?: string;
 }
 
 /**
- * Resolves a GitHub PAT. Precedence:
- * 1. GITHUB_TOKEN environment variable
- * 2. `gh auth token` (requires gh CLI to be installed and logged in)
- *
- * Throws if no token can be found.
+ * Resolves a GitHub token according to configured precedence.
+ * Throws a friendly error with setup instructions if no token is found.
  */
 export async function resolveGitHubToken(): Promise<GitHubAuth> {
+  // 1. GITHUB_TOKEN env var
   const envToken = process.env['GITHUB_TOKEN'];
   if (envToken && envToken.trim().length > 0) {
     logger.debug('Using GITHUB_TOKEN from environment');
     return { token: envToken.trim(), source: 'env' };
   }
 
-  logger.debug('GITHUB_TOKEN not set, trying `gh auth token`');
+  // 2. Stored credentials from ~/.repo-guardian/config.json
+  const stored = loadStoredConfig();
+  if (stored?.githubToken && stored.githubToken.trim().length > 0) {
+    logger.debug('Using GitHub token from local config file');
+    return {
+      token: stored.githubToken.trim(),
+      source: 'config',
+      user: stored.githubUser,
+    };
+  }
+
+  // 3. gh CLI fallback
+  logger.debug('No env or config token found, trying `gh auth token`');
   try {
     const result = await runCommand('gh', ['auth', 'token']);
     const token = result.stdout.trim();
@@ -36,12 +50,14 @@ export async function resolveGitHubToken(): Promise<GitHubAuth> {
       return { token, source: 'gh-cli' };
     }
   } catch {
-    // gh not installed — fall through to the error below
+    // gh not installed
   }
 
   throw new Error(
-    'No GitHub token found.\n' +
-      'Set the GITHUB_TOKEN environment variable, or install the GitHub CLI (gh) and run:\n' +
-      '  gh auth login',
+    'No GitHub authentication found.\n\n' +
+      'To log in directly from your terminal, run:\n' +
+      '  repo-guardian auth login\n\n' +
+      'Or set the GITHUB_TOKEN environment variable:\n' +
+      '  $env:GITHUB_TOKEN = "ghp_yourToken"',
   );
 }

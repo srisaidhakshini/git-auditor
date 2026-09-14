@@ -70,15 +70,37 @@ npm link
 
 ## 🔑 Authentication
 
-Repo Guardian supports authentication via environment variable or the GitHub CLI:
+Repo Guardian provides built-in browser and token login without needing external tools:
 
-### Option 1: Personal Access Token (PAT)
+### Option 1: Interactive Browser Login (Recommended)
+Run the built-in login command to authenticate via browser device code:
 ```bash
+repo-guardian auth login
+```
+This opens `https://github.com/login/device`, displays a one-time code, and saves your session securely to `~/.repo-guardian/config.json`.
+
+Check your status or log out at any time:
+```bash
+repo-guardian auth status
+repo-guardian auth logout
+```
+
+### Option 2: Personal Access Token (PAT)
+Pass `--pat` to open the GitHub token generator and paste a token directly:
+```bash
+repo-guardian auth login --pat
+```
+Or set it in your environment:
+```bash
+# PowerShell
+$env:GITHUB_TOKEN = "ghp_your_token_here"
+
+# Bash / Zsh
 export GITHUB_TOKEN=ghp_your_token_here
 ```
 
-### Option 2: GitHub CLI (`gh`)
-If `gh` is logged in, Repo Guardian automatically resolves your credentials:
+### Option 3: GitHub CLI (`gh`)
+If `gh` CLI is installed and logged in, Repo Guardian will automatically detect it:
 ```bash
 gh auth login
 ```
