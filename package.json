@@ -1,0 +1,50 @@
+{
+  "name": "repo-guardian",
+  "version": "1.0.0",
+  "description": "CLI security & hygiene agent for GitHub repositories — detects leaked secrets and malicious dependencies, remediates safely.",
+  "type": "module",
+  "bin": {
+    "repo-guardian": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/srisaidhakshini/git-auditor.git"
+  },
+  "keywords": [
+    "security",
+    "secrets",
+    "gitleaks",
+    "github",
+    "cli",
+    "git"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/srisaidhakshini/git-auditor/issues"
+  },
+  "homepage": "https://github.com/srisaidhakshini/git-auditor#readme",
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "chalk": "^6.0.0",
+    "commander": "^15.0.0",
+    "inquirer": "^14.2.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
