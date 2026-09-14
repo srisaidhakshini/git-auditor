@@ -8,6 +8,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+!test/fixtures/**/.env
+
+# Fixture git repositories
+test/fixtures/**/.git/
 
 # OS
 .DS_Store
