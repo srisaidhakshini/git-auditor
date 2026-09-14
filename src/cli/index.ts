@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { registerAuthCommand } from './commands/auth.js';
 import { registerScanCommand } from './commands/scan.js';
 import { registerCleanCommand } from './commands/clean.js';
 import { registerInitPreventionCommand } from './commands/init-prevention.js';
@@ -31,6 +32,7 @@ program
   .version(pkg.version);
 
 // Register all sub-commands
+registerAuthCommand(program);
 registerScanCommand(program);
 registerCleanCommand(program);
 registerInitPreventionCommand(program);
