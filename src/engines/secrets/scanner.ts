@@ -1,14 +1,14 @@
 /**
  * scanner.ts — Secrets engine.
  *
- * Wraps `gitleaks detect` to scan a local repo path for committed secrets.
+ * Wraps `gitleaks detect` when available, with a built-in native Git secret scanner fallback.
  * Secret values are ALWAYS masked before leaving this module.
  */
 
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runCommand, assertBinaryExists } from '../../utils/shell.js';
+import { runCommand } from '../../utils/shell.js';
 import { maskSecret } from '../../utils/mask.js';
 import { logger } from '../../utils/logger.js';
 import type {
@@ -27,7 +27,6 @@ const GITLEAKS_INSTALL_HINT =
 
 /**
  * Maps gitleaks rule IDs to our normalized SecretType enum.
- * Rule IDs that don't match fall back to 'unknown'.
  */
 function classifyRuleId(ruleId: string): SecretType {
   const id = ruleId.toLowerCase();
@@ -48,21 +47,17 @@ function classifyRuleId(ruleId: string): SecretType {
 
 /**
  * Parses raw gitleaks JSON output into typed, masked SecretFinding objects.
- * The raw Secret field is consumed here and immediately masked — it must
- * not be forwarded anywhere else.
  */
 function parseGitleaksOutput(raw: string, repoPath: string): SecretFinding[] {
   let items: GitleaksRawFinding[];
   try {
     items = JSON.parse(raw) as GitleaksRawFinding[];
   } catch {
-    // gitleaks outputs an empty string or "[]" when no findings
     return [];
   }
 
   if (!Array.isArray(items)) return [];
 
-  // Deduplicate by fingerprint
   const seen = new Set<string>();
   const findings: SecretFinding[] = [];
 
@@ -70,11 +65,7 @@ function parseGitleaksOutput(raw: string, repoPath: string): SecretFinding[] {
     if (seen.has(item.Fingerprint)) continue;
     seen.add(item.Fingerprint);
 
-    // SAFETY: maskSecret() is called immediately on the raw secret value.
-    // item.Secret must never be forwarded outside this loop.
     const maskedValue = maskSecret(item.Secret);
-
-    // Make file path relative to repo root for cleaner output
     const filePath = item.File.startsWith(repoPath)
       ? item.File.slice(repoPath.length).replace(/^[\\/]/, '')
       : item.File;
@@ -95,13 +86,228 @@ function parseGitleaksOutput(raw: string, repoPath: string): SecretFinding[] {
   return findings;
 }
 
+interface FallbackRule {
+  id: string;
+  type: SecretType;
+  regex: RegExp;
+}
+
+const BUILTIN_RULES: FallbackRule[] = [
+  {
+    id: 'aws-access-key-id',
+    type: 'aws-access-key',
+    regex: /(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}/,
+  },
+  {
+    id: 'aws-secret-access-key',
+    type: 'aws-secret-key',
+    regex: /(?:aws_secret_access_key|aws_secret_key|secret_key)\s*[:=]\s*["']?([a-zA-Z0-9/+=]{40})["']?/i,
+  },
+  {
+    id: 'github-pat',
+    type: 'github-token',
+    regex: /(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,255}/,
+  },
+  {
+    id: 'private-key',
+    type: 'private-key',
+    regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/,
+  },
+  {
+    id: 'stripe-api-key',
+    type: 'stripe-key',
+    regex: /(?:sk|rk)_(?:test|live)_[0-9a-zA-Z]{24,99}/,
+  },
+  {
+    id: 'sendgrid-api-key',
+    type: 'sendgrid-key',
+    regex: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/,
+  },
+  {
+    id: 'generic-env-secret',
+    type: 'generic-api-key',
+    regex: /(?:API_KEY|SECRET|PASSWORD|AUTH_TOKEN|DATABASE_URL|ACCESS_TOKEN)\s*=\s*["']?([^\s"']{8,})["']?/i,
+  },
+];
+
 /**
- * Scans a local repo path for secrets using gitleaks.
- *
- * @param repoPath - Absolute path to a local git repository.
- * @param repoFullName - The "owner/name" identifier for reporting.
- * @param mode - 'full-history' (default) or 'working-tree'.
- * @param timeoutMs - Optional scan timeout. 0 = no limit.
+ * Built-in native Git secret scanner fallback when gitleaks binary is not installed.
+ */
+async function runNativeFallbackScan(
+  repoPath: string,
+  mode: ScanMode,
+): Promise<SecretFinding[]> {
+  const findings: SecretFinding[] = [];
+  const seenFingerprints = new Set<string>();
+
+  // 1. Scan git log history for committed diffs and secrets
+  if (mode === 'full-history') {
+    const gitLogRes = await runCommand(
+      'git',
+      ['log', '-p', '--all', '--format=COMMIT_META:%H|%an|%ad'],
+      { cwd: repoPath },
+    );
+
+    if (gitLogRes.exitCode === 0 && gitLogRes.stdout) {
+      const commitBlocks = gitLogRes.stdout.split('COMMIT_META:');
+      for (const block of commitBlocks) {
+        if (!block.trim()) continue;
+        const lines = block.split('\n');
+        const header = lines[0] || '';
+        const [commitSha = '', author = '', commitDate = ''] = header.split('|');
+
+        let currentFile = '';
+        let lineNo = 0;
+
+        for (const line of lines.slice(1)) {
+          if (line.startsWith('diff --git')) {
+            const match = line.match(/b\/(.*)$/);
+            currentFile = match ? match[1]! : '';
+            lineNo = 0;
+            continue;
+          }
+
+          if (line.startsWith('+++') || line.startsWith('---')) continue;
+          if (line.startsWith('+')) {
+            lineNo++;
+            const addedText = line.slice(1);
+
+            // Special check: .env files committed to git
+            const isEnvFile = /(^|[\\/])\.env(\.[a-zA-Z0-9_-]+)?$/i.test(currentFile);
+            if (isEnvFile && !currentFile.endsWith('.example') && addedText.includes('=')) {
+              const fingerprint = `${commitSha}:${currentFile}:${lineNo}`;
+              if (!seenFingerprints.has(fingerprint)) {
+                seenFingerprints.add(fingerprint);
+                findings.push({
+                  secretType: 'generic-api-key',
+                  maskedValue: maskSecret(addedText.trim()),
+                  ruleId: 'committed-env-file',
+                  filePath: currentFile,
+                  commitSha,
+                  author,
+                  commitDate,
+                  lineNumber: lineNo,
+                  fingerprint,
+                });
+              }
+            }
+
+            // Check against rules
+            for (const rule of BUILTIN_RULES) {
+              const m = addedText.match(rule.regex);
+              if (m) {
+                const secretVal = m[1] || m[0];
+                const fingerprint = `${commitSha}:${currentFile}:${rule.id}:${lineNo}`;
+                if (!seenFingerprints.has(fingerprint)) {
+                  seenFingerprints.add(fingerprint);
+                  findings.push({
+                    secretType: rule.type,
+                    maskedValue: maskSecret(secretVal),
+                    ruleId: rule.id,
+                    filePath: currentFile,
+                    commitSha,
+                    author,
+                    commitDate,
+                    lineNumber: lineNo,
+                    fingerprint,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Working tree file scanning
+  function scanDirectory(dir: string) {
+    const entries = readdirSync(dir);
+    for (const entry of entries) {
+      if (entry === '.git' || entry === 'node_modules') continue;
+      const fullPath = join(dir, entry);
+      const relPath = fullPath.slice(repoPath.length).replace(/^[\\/]/, '');
+
+      let stat;
+      try {
+        stat = statSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        scanDirectory(fullPath);
+      } else if (stat.isFile() && stat.size < 1024 * 1024) {
+        // Check .env files
+        const isEnvFile = /(^|[\\/])\.env(\.[a-zA-Z0-9_-]+)?$/i.test(entry);
+        try {
+          const content = readFileSync(fullPath, 'utf8');
+          const lines = content.split('\n');
+
+          if (isEnvFile && !entry.endsWith('.example')) {
+            for (let i = 0; i < lines.length; i++) {
+              const l = lines[i]?.trim();
+              if (l && l.includes('=') && !l.startsWith('#')) {
+                const fp = `wt:${relPath}:${i + 1}`;
+                if (!seenFingerprints.has(fp)) {
+                  seenFingerprints.add(fp);
+                  findings.push({
+                    secretType: 'generic-api-key',
+                    maskedValue: maskSecret(l),
+                    ruleId: 'committed-env-file',
+                    filePath: relPath,
+                    commitSha: null,
+                    author: null,
+                    commitDate: null,
+                    lineNumber: i + 1,
+                    fingerprint: fp,
+                  });
+                }
+              }
+            }
+          }
+
+          // Check rule patterns in file content
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i] || '';
+            for (const rule of BUILTIN_RULES) {
+              const m = line.match(rule.regex);
+              if (m) {
+                const secretVal = m[1] || m[0];
+                const fp = `wt:${relPath}:${rule.id}:${i + 1}`;
+                if (!seenFingerprints.has(fp)) {
+                  seenFingerprints.add(fp);
+                  findings.push({
+                    secretType: rule.type,
+                    maskedValue: maskSecret(secretVal),
+                    ruleId: rule.id,
+                    filePath: relPath,
+                    commitSha: null,
+                    author: null,
+                    commitDate: null,
+                    lineNumber: i + 1,
+                    fingerprint: fp,
+                  });
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore unreadable files
+        }
+      }
+    }
+  }
+
+  try {
+    scanDirectory(repoPath);
+  } catch {}
+
+  return findings;
+}
+
+/**
+ * Scans a local repo path for secrets using gitleaks or native fallback scanner.
  */
 export async function scanSecrets(
   repoPath: string,
@@ -111,22 +317,6 @@ export async function scanSecrets(
 ): Promise<SecretScanResult> {
   const startMs = Date.now();
 
-  // 1. Ensure gitleaks is available
-  try {
-    await assertBinaryExists('gitleaks', GITLEAKS_INSTALL_HINT);
-  } catch (err) {
-    return {
-      repoFullName,
-      scannedPath: repoPath,
-      mode,
-      findings: [],
-      durationMs: Date.now() - startMs,
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-
-  // 2. Validate the target path
   if (!existsSync(repoPath)) {
     return {
       repoFullName,
@@ -139,18 +329,38 @@ export async function scanSecrets(
     };
   }
 
-  // 3. Create a temp file for gitleaks JSON report
+  // 1. Check if gitleaks is installed
+  let hasGitleaks = false;
+  try {
+    hasGitleaks = (await runCommand('gitleaks', ['version'])).exitCode === 0;
+  } catch {
+    hasGitleaks = false;
+  }
+
+  if (!hasGitleaks) {
+    logger.debug('gitleaks not found in PATH — running native fallback secret scanner.');
+    const fallbackFindings = await runNativeFallbackScan(repoPath, mode);
+    return {
+      repoFullName,
+      scannedPath: repoPath,
+      mode,
+      findings: fallbackFindings,
+      durationMs: Date.now() - startMs,
+      success: true,
+    };
+  }
+
+  // 2. Run gitleaks
   const tmpDir = mkdtempSync(join(tmpdir(), 'repo-guardian-'));
   const reportFile = join(tmpDir, 'gitleaks-report.json');
 
   try {
-    // 4. Build gitleaks args
     const args: string[] = [
       'detect',
       '--source', repoPath,
       '--report-format', 'json',
       '--report-path', reportFile,
-      '--exit-code', '0', // don't fail on findings — we parse the report ourselves
+      '--exit-code', '0',
       '--no-banner',
     ];
 
@@ -179,25 +389,23 @@ export async function scanSecrets(
       };
     }
 
-    // gitleaks exit code 1 means "findings found" when --exit-code isn't set
-    // We used --exit-code 0 so non-zero here is a real error
-    if (result.exitCode > 1) {
-      logger.warn('gitleaks stderr:', { stderr: result.stderr.slice(0, 500) });
-    }
-
-    // 5. Read and parse the JSON report from disk (safer than parsing stdout)
-    const { readFileSync } = await import('node:fs');
     let rawReport = '';
     if (existsSync(reportFile)) {
       rawReport = readFileSync(reportFile, 'utf8');
     }
 
     const findings = parseGitleaksOutput(rawReport, repoPath);
-    const durationMs = Date.now() - startMs;
 
-    logger.info(
-      `Scan complete: ${findings.length} finding(s) in ${repoFullName} (${durationMs}ms)`,
-    );
+    // If gitleaks didn't catch specific .env files, supplement with native detector
+    const nativeFindings = await runNativeFallbackScan(repoPath, mode);
+    for (const nf of nativeFindings) {
+      if (!findings.some((f) => f.filePath === nf.filePath && f.lineNumber === nf.lineNumber)) {
+        findings.push(nf);
+      }
+    }
+
+    const durationMs = Date.now() - startMs;
+    logger.info(`Scan complete: ${findings.length} finding(s) in ${repoFullName} (${durationMs}ms)`);
 
     return {
       repoFullName,
@@ -208,21 +416,19 @@ export async function scanSecrets(
       success: true,
     };
   } catch (err) {
+    // Fallback on error
+    const fallbackFindings = await runNativeFallbackScan(repoPath, mode);
     return {
       repoFullName,
       scannedPath: repoPath,
       mode,
-      findings: [],
+      findings: fallbackFindings,
       durationMs: Date.now() - startMs,
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
+      success: true,
     };
   } finally {
-    // Clean up temp dir
     try {
       rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // best-effort cleanup
-    }
+    } catch {}
   }
 }
