@@ -17,14 +17,14 @@ export interface GitHubAuth {
   user?: string;
 }
 
-/**
- * Resolves a GitHub token according to configured precedence.
- * Throws a friendly error with setup instructions if no token is found.
- */
 export async function resolveGitHubToken(): Promise<GitHubAuth> {
-  // 1. GITHUB_TOKEN env var
+  // 1. GITHUB_TOKEN env var (ignoring literal documentation placeholders)
   const envToken = process.env['GITHUB_TOKEN'];
-  if (envToken && envToken.trim().length > 0) {
+  if (
+    envToken &&
+    envToken.trim().length > 0 &&
+    !/your(Personal)?(Access)?Token/i.test(envToken)
+  ) {
     logger.debug('Using GITHUB_TOKEN from environment');
     return { token: envToken.trim(), source: 'env' };
   }
