@@ -39,6 +39,7 @@
     "vitest": "^5.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "@octokit/rest": "^22.0.1",
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
