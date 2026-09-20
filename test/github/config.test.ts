@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as shell from '../../src/utils/shell.js';
 import { loadStoredConfig, saveStoredToken, clearStoredToken } from '../../src/github/config.js';
 import { resolveGitHubToken } from '../../src/github/auth.js';
 
@@ -52,6 +53,8 @@ describe('config.ts & auth.ts', () => {
   });
 
   it('throws friendly error when no token is available and gh is not present', async () => {
+    const spy = vi.spyOn(shell, 'runCommand').mockRejectedValue(new Error('Command not found: "gh"'));
     await expect(resolveGitHubToken()).rejects.toThrow('No GitHub authentication found');
+    spy.mockRestore();
   });
 });

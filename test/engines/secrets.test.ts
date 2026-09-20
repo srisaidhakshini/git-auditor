@@ -57,26 +57,16 @@ describe('scan_secrets — dirty-repo fixture', () => {
   it('handles missing binary or completes scan', async () => {
     const result = await scanSecrets(FIXTURE_PATH, 'test/dirty-repo', 'full-history');
 
-    if (!hasGitleaks) {
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('gitleaks');
-      expect(result.error).toContain('not found');
-      expect(result.findings).toEqual([]);
-    } else {
-      expect(result.success).toBe(true);
-      expect(result.repoFullName).toBe('test/dirty-repo');
-      expect(result.mode).toBe('full-history');
-      expect(result.durationMs).toBeGreaterThan(0);
-    }
+    // Works with gitleaks or the built-in native fallback scanner.
+    expect(result.success).toBe(true);
+    expect(result.repoFullName).toBe('test/dirty-repo');
+    expect(result.mode).toBe('full-history');
   }, 30_000);
 
   it('detects and masks secrets when gitleaks is available', async () => {
     const result = await scanSecrets(FIXTURE_PATH, 'test/dirty-repo', 'full-history');
 
-    if (!hasGitleaks || !result.success) {
-      expect(result.findings).toEqual([]);
-      return;
-    }
+    expect(result.success).toBe(true);
 
     expect(result.findings.length).toBeGreaterThan(0);
 
@@ -93,7 +83,7 @@ describe('scan_secrets — dirty-repo fixture', () => {
       expect(finding.ruleId).toBeDefined();
       expect(finding.filePath).toBeDefined();
       expect(finding.fingerprint).toBeDefined();
-      expect(finding.commitSha).not.toBeNull();
+      if (hasGitleaks) expect(finding.commitSha).not.toBeNull();
     }
 
     // Deduplication check

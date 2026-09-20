@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderTerminalReport, renderJsonReport } from '../../src/report/formatter.js';
+import { renderTerminalReport, renderJsonReport, renderHtmlReport } from '../../src/report/formatter.js';
 import type { ScanReport } from '../../src/report/types.js';
 
 describe('formatter.ts', () => {
@@ -77,5 +77,13 @@ describe('formatter.ts', () => {
     const parsed = JSON.parse(jsonStr) as ScanReport;
     expect(parsed.totalFindings).toBe(1);
     expect(parsed.repos[0]?.secrets?.findings[0]?.maskedValue).toBe('AKIA****');
+  });
+
+  it('renders html report with dashboard cards and masked values', () => {
+    const html = renderHtmlReport(dirtyReport);
+    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('AKIA****');
+    expect(html).toContain('my-org/dirty-repo');
+    expect(html).toContain('CRITICAL REMINDER');
   });
 });
