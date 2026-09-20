@@ -1,11 +1,10 @@
 /**
  * scan.ts — The `repo-guardian scan` command.
  *
- * Orchestrates: repo discovery → clone → scan_secrets → report.
- * Phase 1: secrets-only. Dependency scanning added in Phase 2.
+ * Orchestrates: repo discovery → clone → scan_secrets + scan_dependencies → report.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Command } from 'commander';
@@ -15,7 +14,12 @@ import { resolveGitHubToken } from '../../github/auth.js';
 import { listOwnedRepos, findRepo } from '../../github/repos.js';
 import { loadCachedRepos, saveReposToCache } from '../../github/cache.js';
 import { scanSecrets } from '../../engines/secrets/scanner.js';
-import { renderTerminalReport, renderJsonReport } from '../../report/formatter.js';
+import { scanDependencies } from '../../engines/deps/scanner.js';
+import {
+  renderTerminalReport,
+  renderJsonReport,
+  renderHtmlReport,
+} from '../../report/formatter.js';
 import { runCommand } from '../../utils/shell.js';
 import { logger } from '../../utils/logger.js';
 import type { ScanReport, RepoReport } from '../../report/types.js';
@@ -23,12 +27,14 @@ import type { GitHubRepo } from '../../github/repos.js';
 
 // ─── Options ──────────────────────────────────────────────────────────────────
 
-interface ScanOptions {
+export interface ScanOptions {
   repo?: string;
   all?: boolean;
   secretsOnly?: boolean;
   depsOnly?: boolean;
   json?: boolean;
+  report?: 'terminal' | 'json' | 'html';
+  output?: string;
   refresh?: boolean;
   timeoutSeconds?: string;
 }
@@ -39,7 +45,7 @@ interface ScanOptions {
  * Clones a repo into a temp directory.
  * Returns the cloned path, or throws on failure.
  */
-async function cloneRepo(cloneUrl: string, token: string): Promise<string> {
+export async function cloneRepo(cloneUrl: string, token: string): Promise<string> {
   const tmpDir = mkdtempSync(join(tmpdir(), 'repo-guardian-clone-'));
 
   // Inject token into the HTTPS URL for private repo access
@@ -49,8 +55,7 @@ async function cloneRepo(cloneUrl: string, token: string): Promise<string> {
 
   const result = await runCommand('git', [
     'clone',
-    '--depth=0', // full history for secret scanning
-    '--no-single-branch',
+    // full clone (no --depth) so secret scanning sees all history
     authedUrl,
     tmpDir,
   ]);
@@ -65,7 +70,7 @@ async function cloneRepo(cloneUrl: string, token: string): Promise<string> {
 
 // ─── Command action ───────────────────────────────────────────────────────────
 
-async function runScan(options: ScanOptions): Promise<void> {
+export async function runScan(options: ScanOptions): Promise<void> {
   // Validate mutually exclusive options
   if (options.secretsOnly && options.depsOnly) {
     console.error(chalk.red('Error: --secrets-only and --deps-only cannot be used together.'));
@@ -107,7 +112,13 @@ async function runScan(options: ScanOptions): Promise<void> {
     if (cached) {
       repos = cached;
     } else {
-      repos = await listOwnedRepos({ token, source: 'env' });
+      repos = await listOwnedRepos({ token, source: 'env' }).catch((err: unknown) => {
+        console.error(
+          chalk.red('\nFailed to fetch repositories from GitHub:\n') +
+            (err instanceof Error ? err.message : String(err)),
+        );
+        process.exit(1);
+      });
       saveReposToCache(repos);
     }
   }
@@ -144,7 +155,7 @@ async function runScan(options: ScanOptions): Promise<void> {
         htmlUrl: repo.htmlUrl,
       };
 
-      // Secret scan (skipped if --deps-only)
+      // 1. Secret scan (skipped if --deps-only)
       if (!options.depsOnly) {
         const secretResult = await scanSecrets(
           clonedPath,
@@ -156,7 +167,12 @@ async function runScan(options: ScanOptions): Promise<void> {
         totalFindings += secretResult.findings.length;
       }
 
-      // Phase 2: dep scan would go here
+      // 2. Dependency scan (skipped if --secrets-only)
+      if (!options.secretsOnly) {
+        const depResult = await scanDependencies(clonedPath, repo.fullName, timeoutMs);
+        repoReport.deps = depResult;
+        totalFindings += depResult.findings.length;
+      }
 
       repoReports.push(repoReport);
     }
@@ -179,10 +195,22 @@ async function runScan(options: ScanOptions): Promise<void> {
     repos: repoReports,
   };
 
-  if (options.json) {
-    process.stdout.write(renderJsonReport(report) + '\n');
+  const reportFormat = options.json ? 'json' : options.report || 'terminal';
+  let formattedOutput = '';
+
+  if (reportFormat === 'json') {
+    formattedOutput = renderJsonReport(report);
+  } else if (reportFormat === 'html') {
+    formattedOutput = renderHtmlReport(report);
   } else {
-    process.stdout.write(renderTerminalReport(report) + '\n');
+    formattedOutput = renderTerminalReport(report);
+  }
+
+  if (options.output) {
+    writeFileSync(options.output, formattedOutput, 'utf8');
+    console.log(chalk.green(`\n✓ Report saved to ${options.output}`));
+  } else {
+    process.stdout.write(formattedOutput + '\n');
   }
 
   // Exit 1 if findings (useful for CI)
@@ -198,8 +226,10 @@ export function registerScanCommand(program: Command): void {
     .option('--repo <name>', 'Scan a specific repository (owner/name or bare name)')
     .option('--all', 'Scan all owned repositories')
     .option('--secrets-only', 'Run only the secrets engine (skip dependency scan)')
-    .option('--deps-only', 'Run only the dependency engine (Phase 2) — skip secrets')
-    .option('--json', 'Output results as JSON (for CI pipelines)')
+    .option('--deps-only', 'Run only the dependency engine — skip secrets')
+    .option('--json', 'Output results as JSON (shorthand for --report json)')
+    .option('--report <format>', 'Report format: terminal, json, or html', 'terminal')
+    .option('--output <file>', 'Write report to a file instead of stdout')
     .option('--refresh', 'Force-refresh the cached repository list')
     .option('--timeout-seconds <n>', 'Per-repo scan timeout in seconds (0 = unlimited)')
     .action(runScan);
