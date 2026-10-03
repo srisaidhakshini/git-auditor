@@ -18,6 +18,7 @@ export async function showMainMenu(): Promise<string[] | null> {
         name: 'action',
         message: 'What would you like to do?',
         choices: [
+          { name: 'Guided fix: scan, then fix problems step by step (recommended)', value: 'fix' },
           { name: 'Scan repositories for secrets & risky dependencies', value: 'scan' },
           { name: "Clean secrets out of a repository's git history", value: 'clean' },
           { name: 'Protect this project (.gitignore + pre-commit hook)', value: 'init-prevention' },

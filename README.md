@@ -61,6 +61,8 @@ Reads `package.json` in the cloned repo and runs three checks:
 Findings carry a severity (`critical` / `high` / `medium` / `low`) and a remediation hint.
 
 ### 5. Reporting
+The default terminal report is a short summary: secrets are grouped (one line per file + rule + value, however many commits contain it), dependency CVEs are summarised as *how to fix* actions (`npm audit fix`, or *update X to version Y*) plus the most serious issues, supply-chain threats are always shown in full, and clean repos collapse to one line. Use `--details` for everything. Placeholder values (`your_api_key`, `replace_me`) and template files (`.env.example`, `*.sample`) are ignored as false positives.
+
 Results from both engines are merged into one report per repo: coloured terminal output grouped by severity, `--json` for machines, or `--report html` for a shareable page. `scan` exits with code **1 if anything was found** and **0 if clean**, so it drops straight into CI.
 
 ### 6. Safe remediation (`clean`)
@@ -168,6 +170,7 @@ Read-only. Scans repositories for secrets and dependency problems. Pass `--repo`
 | `--all` | Every repository you own. |
 | `--secrets-only` | Run only the secrets engine. |
 | `--deps-only` | Run only the dependency engine. (Can't combine with `--secrets-only`.) |
+| `-d, --details` | Show every finding in full. The default terminal report is a short grouped summary. |
 | `--json` | Shorthand for `--report json`. |
 | `--report <format>` | `terminal` (default), `json`, or `html`. |
 | `--output <file>` | Write the report to a file instead of stdout. |
@@ -183,6 +186,22 @@ repo-guardian scan --repo my-repo --json > findings.json
 repo-guardian scan --all --refresh --timeout-seconds 120
 ```
 **Exit code:** `0` clean, `1` findings (or error).
+
+### `repo-guardian fix` — guided fixing (recommended)
+
+Scans, then walks you through **one repo at a time**. Each step offers the suggested action as the first choice, so you just press **Enter** to accept, or pick *Skip* / *Skip this repository* / *Quit*. No need to scroll back or retype commands. `scan` also offers to start this flow when it finds problems in a terminal.
+
+| Step | What "yes" does |
+|---|---|
+| Secrets | Asks if you've **rotated** the credentials, then runs the `clean` flow (dry-run, verified backup, rewrite, separate confirmation before force-push). |
+| Dependencies | Runs `npm audit fix` (lockfile only, no scripts) in a fresh clone, commits to a **new branch** `repo-guardian/fix-dependencies-<date>`, and after you confirm pushes it and prints a pull-request link. Your default branch and history are never touched. |
+
+Options: `--repo <name>`, `--all`, `--secrets-only`, `--deps-only`, `--refresh`. Needs a terminal and a GitHub token that can write to the repo (see Troubleshooting). Issues `npm audit fix` can't resolve (breaking upgrades, exact-pinned versions) are listed as manual upgrades.
+
+```bash
+repo-guardian fix --all
+repo-guardian fix --repo my-repo --deps-only
+```
 
 ### `repo-guardian clean [repo]`
 
@@ -322,6 +341,7 @@ Fixtures: `test/fixtures/dirty-repo` (git repo with committed secrets) and `test
 | Force push blocked | Branch protection forbids force pushes — temporarily allow them in GitHub settings or use another branch. |
 | `chat` says to set an API key | Set `ANTHROPIC_API_KEY`, or keep using the offline planner. |
 | Stale repo list | Add `--refresh`. |
+| Push fails with `403 Permission denied` | Your token can't write to the repo. Run `repo-guardian auth login` (or `gh auth login -h github.com -p https -w`); a fine-grained token needs **Contents: Read and write**. |
 
 ---
 

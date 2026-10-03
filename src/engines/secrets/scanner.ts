@@ -65,6 +65,7 @@ function parseGitleaksOutput(raw: string, repoPath: string): SecretFinding[] {
     if (seen.has(item.Fingerprint)) continue;
     seen.add(item.Fingerprint);
 
+    if (isFalsePositive(item.RuleID, item.File, item.Secret)) continue;
     const maskedValue = maskSecret(item.Secret);
     const filePath = item.File.startsWith(repoPath)
       ? item.File.slice(repoPath.length).replace(/^[\\/]/, '')
@@ -84,6 +85,30 @@ function parseGitleaksOutput(raw: string, repoPath: string): SecretFinding[] {
   }
 
   return findings;
+}
+
+
+/** Template/example files hold placeholders by design — never real secrets. */
+const EXAMPLE_FILE = /\.(example|sample|template|tpl|dist)$/i;
+
+/** True for obvious placeholder values like `your_api_key`, `replace_me`, `<token>`, `xxxx`. */
+function isPlaceholderValue(value: string): boolean {
+  const v = value.trim().replace(/^["']|["']$/g, '');
+  return (
+    /^(your|my|example|sample|dummy|fake|placeholder|changeme|change[-_]me|replace|insert|todo|xxx|<|\$\{|\{\{|\*{3,}|\.{3})/i.test(v) ||
+    /(_here\b|your[-_])/i.test(v) ||
+    /^x{4,}$/i.test(v)
+  );
+}
+
+/** Decides whether a candidate finding is a known false positive. */
+function isFalsePositive(ruleId: string, filePath: string, secretValue: string): boolean {
+  if (EXAMPLE_FILE.test(filePath)) return true;
+  if (ruleId === 'generic-env-secret' || ruleId === 'committed-env-file' || ruleId.startsWith('generic')) {
+    const eq = secretValue.indexOf('=');
+    return isPlaceholderValue(eq >= 0 ? secretValue.slice(eq + 1) : secretValue);
+  }
+  return false;
 }
 
 interface FallbackRule {
@@ -174,7 +199,7 @@ async function runNativeFallbackScan(
 
             // Special check: .env files committed to git
             const isEnvFile = /(^|[\\/])\.env(\.[a-zA-Z0-9_-]+)?$/i.test(currentFile);
-            if (isEnvFile && !currentFile.endsWith('.example') && addedText.includes('=')) {
+            if (isEnvFile && addedText.includes('=') && !isFalsePositive('committed-env-file', currentFile, addedText)) {
               const fingerprint = `${commitSha}:${currentFile}:${lineNo}`;
               if (!seenFingerprints.has(fingerprint)) {
                 seenFingerprints.add(fingerprint);
@@ -197,6 +222,7 @@ async function runNativeFallbackScan(
               const m = addedText.match(rule.regex);
               if (m) {
                 const secretVal = m[1] || m[0];
+                if (isFalsePositive(rule.id, currentFile, secretVal)) continue;
                 const fingerprint = `${commitSha}:${currentFile}:${rule.id}:${lineNo}`;
                 if (!seenFingerprints.has(fingerprint)) {
                   seenFingerprints.add(fingerprint);
@@ -244,10 +270,10 @@ async function runNativeFallbackScan(
           const content = readFileSync(fullPath, 'utf8');
           const lines = content.split('\n');
 
-          if (isEnvFile && !entry.endsWith('.example')) {
+          if (isEnvFile && !EXAMPLE_FILE.test(entry)) {
             for (let i = 0; i < lines.length; i++) {
               const l = lines[i]?.trim();
-              if (l && l.includes('=') && !l.startsWith('#')) {
+              if (l && l.includes('=') && !l.startsWith('#') && !isFalsePositive('committed-env-file', relPath, l)) {
                 const fp = `wt:${relPath}:${i + 1}`;
                 if (!seenFingerprints.has(fp)) {
                   seenFingerprints.add(fp);
@@ -274,6 +300,7 @@ async function runNativeFallbackScan(
               const m = line.match(rule.regex);
               if (m) {
                 const secretVal = m[1] || m[0];
+                if (isFalsePositive(rule.id, relPath, secretVal)) continue;
                 const fp = `wt:${relPath}:${rule.id}:${i + 1}`;
                 if (!seenFingerprints.has(fp)) {
                   seenFingerprints.add(fp);
