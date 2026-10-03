@@ -9,6 +9,7 @@
 
 import chalk, { type ChalkInstance } from 'chalk';
 import type { ScanReport, RepoReport, Severity } from './types.js';
+import { renderCompactReport } from './compact.js';
 import type { SecretFinding } from '../engines/secrets/types.js';
 import type { DependencyFinding } from '../engines/deps/types.js';
 
@@ -177,7 +178,7 @@ function renderRepo(repo: RepoReport): string {
 
 // ─── Terminal Renderer ────────────────────────────────────────────────────────
 
-export function renderTerminalReport(report: ScanReport): string {
+function renderDetailedReport(report: ScanReport): string {
   const lines: string[] = [];
 
   lines.push(c.heading('\n╔══════════════════════════════════════════════════════════╗'));
@@ -219,6 +220,13 @@ export function renderTerminalReport(report: ScanReport): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Terminal report. Default is a short, grouped summary; `details: true` prints every finding.
+ */
+export function renderTerminalReport(report: ScanReport, options: { details?: boolean } = {}): string {
+  return options.details ? renderDetailedReport(report) : renderCompactReport(report);
 }
 
 /**

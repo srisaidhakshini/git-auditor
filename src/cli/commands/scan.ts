@@ -22,6 +22,8 @@ import {
 } from '../../report/formatter.js';
 import { runCommand } from '../../utils/shell.js';
 import { isInteractive, pickScanTarget } from '../picker.js';
+import inquirer from 'inquirer';
+import { runFixWizard } from './fix.js';
 import { logger } from '../../utils/logger.js';
 import type { ScanReport, RepoReport } from '../../report/types.js';
 import type { GitHubRepo } from '../../github/repos.js';
@@ -38,6 +40,7 @@ export interface ScanOptions {
   output?: string;
   refresh?: boolean;
   timeoutSeconds?: string;
+  details?: boolean;
 }
 
 // ─── Clone helpers ────────────────────────────────────────────────────────────
@@ -71,7 +74,8 @@ export async function cloneRepo(cloneUrl: string, token: string): Promise<string
 
 // ─── Command action ───────────────────────────────────────────────────────────
 
-export async function runScan(options: ScanOptions): Promise<void> {
+/** Resolves targets, scans them, and returns the report (no rendering, no exit). */
+export async function buildScanReport(options: ScanOptions): Promise<{ report: ScanReport; token: string }> {
   // Validate mutually exclusive options
   if (options.secretsOnly && options.depsOnly) {
     console.error(chalk.red('Error: --secrets-only and --deps-only cannot be used together.'));
@@ -200,6 +204,12 @@ export async function runScan(options: ScanOptions): Promise<void> {
     repos: repoReports,
   };
 
+  return { report, token };
+}
+
+export async function runScan(options: ScanOptions): Promise<void> {
+  const { report, token } = await buildScanReport(options);
+
   const reportFormat = options.json ? 'json' : options.report || 'terminal';
   let formattedOutput = '';
 
@@ -208,7 +218,7 @@ export async function runScan(options: ScanOptions): Promise<void> {
   } else if (reportFormat === 'html') {
     formattedOutput = renderHtmlReport(report);
   } else {
-    formattedOutput = renderTerminalReport(report);
+    formattedOutput = renderTerminalReport(report, { details: options.details });
   }
 
   if (options.output) {
@@ -218,8 +228,21 @@ export async function runScan(options: ScanOptions): Promise<void> {
     process.stdout.write(formattedOutput + '\n');
   }
 
+  // In a terminal, offer to walk through the fixes instead of making the user type each command
+  if (reportFormat === 'terminal' && !options.output && report.totalFindings > 0 && isInteractive()) {
+    const { startFix } = await inquirer.prompt<{ startFix: boolean }>([
+      {
+        type: 'confirm',
+        name: 'startFix',
+        message: chalk.bold('Walk through fixing these now, one repo at a time?'),
+        default: true,
+      },
+    ]);
+    if (startFix) await runFixWizard(report, token);
+  }
+
   // Exit 1 if findings (useful for CI)
-  process.exit(totalFindings > 0 ? 1 : 0);
+  process.exit(report.totalFindings > 0 ? 1 : 0);
 }
 
 // ─── Command registration ─────────────────────────────────────────────────────
@@ -236,6 +259,7 @@ export function registerScanCommand(program: Command): void {
     .option('--report <format>', 'Report format: terminal, json, or html', 'terminal')
     .option('--output <file>', 'Write report to a file instead of stdout')
     .option('--refresh', 'Force-refresh the cached repository list')
+    .option('-d, --details', 'Show every finding in full (default is a short grouped summary)')
     .option('--timeout-seconds <n>', 'Per-repo scan timeout in seconds (0 = unlimited)')
     .action(runScan);
 }

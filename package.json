@@ -1,7 +1,7 @@
 {
   "name": "repo-guardian",
   "version": "1.0.0",
-  "description": "CLI security & hygiene agent for GitHub repositories — detects leaked secrets and malicious dependencies, remediates safely.",
+  "description": "CLI security & hygiene agent for GitHub repositories \u2014 detects leaked secrets and malicious dependencies, remediates safely.",
   "type": "module",
   "bin": {
     "repo-guardian": "./dist/cli/index.js"
@@ -43,7 +43,9 @@
     "@octokit/rest": "^22.0.1",
     "chalk": "^6.0.0",
     "commander": "^15.0.0",
-    "inquirer": "^14.2.2"
+    "dotenv": "^8.2.0",
+    "inquirer": "^14.2.2",
+    "node-fetch": "^3.3.2"
   },
   "engines": {
     "node": ">=20.0.0"
