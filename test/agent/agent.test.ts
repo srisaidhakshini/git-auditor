@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AGENT_TOOLS, executeAgentTool } from '../../src/agent/tools.js';
 import { AgentOrchestrator } from '../../src/agent/orchestrator.js';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -22,6 +22,7 @@ describe('Agent Loop & Tool Orchestration', () => {
 
   it('executes init_prevention tool successfully', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'agent-prevention-test-'));
+    mkdirSync(join(tempDir, '.git'), { recursive: true }); // prevention requires a git repo
     try {
       const result = await executeAgentTool(
         {

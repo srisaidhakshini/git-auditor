@@ -11,6 +11,25 @@ import inquirer from 'inquirer';
 import { AGENT_TOOLS, executeAgentTool } from './tools.js';
 import type { AgentMessage, AgentExecutionContext, AgentToolCall } from './types.js';
 
+const REPO_STOPWORDS = new Set([
+  'scan', 'check', 'find', 'clean', 'rewrite', 'purge', 'strip', 'remove', 'audit', 'list', 'show',
+  'push', 'force', 'run', 'dry', 'please', 'for', 'in', 'on', 'of', 'at', 'the', 'my', 'a', 'an', 'to',
+  'repo', 'repos', 'repository', 'repositories', 'history', 'secret', 'secrets', 'key', 'keys', 'leak',
+  'leaks', 'dependency', 'dependencies', 'deps', 'dep', 'malware', 'packages', 'credentials', 'current',
+  'setup', 'set', 'up', 'and', 'all', 'from', 'git', 'now', 'it', 'this',
+]);
+
+/** Picks a repo name ("owner/name" preferred) out of free text, ignoring command words. */
+export function extractRepo(input: string): string | null {
+  const tokens = input
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^\w./-]+|[^\w./-]+$/g, ''))
+    .filter(Boolean);
+  const slash = tokens.find((t) => /^[\w.-]+\/[\w.-]+$/.test(t) && !/^[a-zA-Z]:/.test(t));
+  if (slash) return slash;
+  return tokens.find((t) => !REPO_STOPWORDS.has(t.toLowerCase()) && /^[\w.-]+$/.test(t)) ?? null;
+}
+
 export class AgentOrchestrator {
   private anthropic: Anthropic | null = null;
   private messages: AgentMessage[] = [];
@@ -154,10 +173,14 @@ export class AgentOrchestrator {
     userInput: string,
     onProgress?: (text: string) => void,
   ): Promise<string> {
-    const inputLower = userInput.toLowerCase();
+    const words = new Set(userInput.toLowerCase().match(/[a-z]+/g) ?? []);
+    const has = (...w: string[]) => w.some((x) => words.has(x));
+    const repoArg = extractRepo(userInput);
+    const needRepo = (what: string): string =>
+      `Which repository should I ${what}? Say e.g. "${what} owner/name" or just the repo name.`;
 
     // 1. List repos
-    if (inputLower.includes('list') && (inputLower.includes('repo') || inputLower.includes('repositories'))) {
+    if (has('list', 'show') && has('repo', 'repos', 'repositories')) {
       onProgress?.(chalk.cyan('🔧 Executing tool: list_repositories()'));
       const result = await executeAgentTool({ id: '1', name: 'list_repositories', input: {} }, this.context);
       const repos = (result['repositories'] as any[]) || [];
@@ -167,15 +190,40 @@ export class AgentOrchestrator {
       );
     }
 
-    // 2. Scan secrets in specific repo or all
-    if (inputLower.includes('scan') && (inputLower.includes('secret') || inputLower.includes('key'))) {
-      const match = userInput.match(/(?:in|for|repo)\s+([a-zA-Z0-9_\-./]+)/i);
-      const targetRepo = match ? match[1]! : 'current';
+    // 2. Push (never executed from chat — needs the CLI's explicit confirmation gates)
+    if (has('push') || (has('force') && has('push'))) {
+      return (
+        'Force-pushing rewritten history needs explicit confirmation, so I will not do it from chat.\n' +
+        `Run: repo-guardian clean ${repoArg ?? '<repo>'}   (it asks for confirmation before rewriting and again before pushing)`
+      );
+    }
 
-      onProgress?.(chalk.cyan(`🔧 Executing tool: scan_secrets(repo_name="${targetRepo}")`));
+    // 3. Clean / rewrite history (preview only from the offline planner)
+    if (has('clean', 'rewrite', 'purge', 'strip', 'remove') && !has('prevention')) {
+      if (!repoArg) return needRepo('clean history for');
+      onProgress?.(chalk.cyan(`🔧 Executing tool: rewrite_history(repo_name="${repoArg}", dry_run=true)`));
+      try {
+        const r = await executeAgentTool(
+          { id: '1', name: 'rewrite_history', input: { repo_name: repoArg, dry_run: true } },
+          this.context,
+        );
+        const n = r['totalCommitsToRewrite'] as number;
+        return n === 0
+          ? `✅ ${r['repoFullName']}: no commits contain sensitive files. Nothing to clean.`
+          : `⚠️ Dry run for ${r['repoFullName']}: ${n} commit(s) contain sensitive files.\n` +
+              `To actually rewrite history, run: repo-guardian clean ${r['repoFullName']}`;
+      } catch (err) {
+        return `Failed to analyse history: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    // 4. Scan secrets
+    if (has('scan', 'check', 'find') && has('secret', 'secrets', 'key', 'keys', 'leak', 'leaks', 'credentials')) {
+      if (!repoArg) return needRepo('scan secrets in');
+      onProgress?.(chalk.cyan(`🔧 Executing tool: scan_secrets(repo_name="${repoArg}")`));
       try {
         const result = await executeAgentTool(
-          { id: '1', name: 'scan_secrets', input: { repo_name: targetRepo } },
+          { id: '1', name: 'scan_secrets', input: { repo_name: repoArg } },
           this.context,
         );
         const count = result['findingsCount'] as number;
@@ -183,22 +231,20 @@ export class AgentOrchestrator {
           `Secret Scan for ${result['repoFullName']}:\n` +
           (count === 0
             ? '✅ No leaked secrets detected in git history.'
-            : `⚠️ Detected ${count} leaked secret(s) in git history!\nRun \`repo-guardian clean ${result['repoFullName']}\` to rewrite history.`)
+            : `⚠️ Detected ${count} leaked secret(s) in git history!\nRotate them first, then run \`repo-guardian clean ${result['repoFullName']}\` to rewrite history.`)
         );
       } catch (err) {
         return `Failed to scan secrets: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 
-    // 3. Scan dependencies
-    if (inputLower.includes('dep') || inputLower.includes('malware') || inputLower.includes('audit')) {
-      const match = userInput.match(/(?:in|for|repo)\s+([a-zA-Z0-9_\-./]+)/i);
-      const targetRepo = match ? match[1]! : 'current';
-
-      onProgress?.(chalk.cyan(`🔧 Executing tool: scan_dependencies(repo_name="${targetRepo}")`));
+    // 5. Scan dependencies
+    if (has('dep', 'deps', 'dependency', 'dependencies', 'malware', 'audit', 'packages', 'npm')) {
+      if (!repoArg) return needRepo('audit dependencies in');
+      onProgress?.(chalk.cyan(`🔧 Executing tool: scan_dependencies(repo_name="${repoArg}")`));
       try {
         const result = await executeAgentTool(
-          { id: '1', name: 'scan_dependencies', input: { repo_name: targetRepo } },
+          { id: '1', name: 'scan_dependencies', input: { repo_name: repoArg } },
           this.context,
         );
         const count = result['findingsCount'] as number;
@@ -213,14 +259,20 @@ export class AgentOrchestrator {
       }
     }
 
-    // 4. Init prevention
-    if (inputLower.includes('prevention') || inputLower.includes('hook') || inputLower.includes('gitignore')) {
-      onProgress?.(chalk.cyan('🔧 Executing tool: init_prevention()'));
-      const result = await executeAgentTool({ id: '1', name: 'init_prevention', input: {} }, this.context);
-      return `✓ Prevention layer initialized. Updated .gitignore and installed pre-commit hook at ${result['hookPath']}.`;
+    // 6. Init prevention
+    if (has('prevention', 'hook', 'hooks', 'gitignore', 'protect')) {
+      const pathMatch = userInput.match(/(?:in|at|for|on)\s+((?:[a-zA-Z]:)?[\w.\\/~-]*[\\/][\w.\\/~-]*|\.{1,2})(?=\s|$)/);
+      const target = pathMatch?.[1];
+      onProgress?.(chalk.cyan(`🔧 Executing tool: init_prevention(${target ? `target_path="${target}"` : ''})`));
+      const result = await executeAgentTool(
+        { id: '1', name: 'init_prevention', input: target ? { target_path: target } : {} },
+        this.context,
+      );
+      if (result['error']) return `❌ ${result['error']}`;
+      return `✓ Prevention layer initialized in ${result['targetPath']}. Updated .gitignore and installed pre-commit hook at ${result['hookPath']}.`;
     }
 
-    // 5. Help / General response
+    // Help / general response
     return (
       `Hello! I am Repo Guardian Agent.\n\n` +
       `I can help you with:\n` +

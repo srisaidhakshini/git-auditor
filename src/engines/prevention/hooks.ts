@@ -4,7 +4,7 @@
  * Configures git pre-commit hooks to block commits containing secrets.
  */
 
-import { existsSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, chmodSync, readFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface HookInstallResult {
@@ -16,6 +16,12 @@ export interface HookInstallResult {
 const PRE_COMMIT_SCRIPT = `#!/bin/sh
 # Repo Guardian Pre-Commit Hook
 # Prevents committing secrets and .env files to git history
+
+# 0. Run the user's pre-existing hook (preserved by Repo Guardian), if any
+LOCAL_HOOK="$(dirname "$0")/pre-commit.pre-guardian"
+if [ -x "$LOCAL_HOOK" ]; then
+  "$LOCAL_HOOK" "$@" || exit 1
+fi
 
 # 1. If gitleaks is installed, run gitleaks protect
 if command -v gitleaks >/dev/null 2>&1; then
@@ -55,6 +61,15 @@ export function installPreCommitHook(repoPath: string): HookInstallResult {
   }
 
   const hookFile = join(hooksDir, 'pre-commit');
+
+  // Never clobber someone else's hook: keep it and chain to it from ours.
+  if (existsSync(hookFile)) {
+    const existing = readFileSync(hookFile, 'utf8');
+    if (!existing.includes('Repo Guardian Pre-Commit Hook')) {
+      renameSync(hookFile, join(hooksDir, 'pre-commit.pre-guardian'));
+    }
+  }
+
   writeFileSync(hookFile, PRE_COMMIT_SCRIPT, { encoding: 'utf8', mode: 0o755 });
 
   try {
