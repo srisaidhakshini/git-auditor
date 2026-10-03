@@ -33,11 +33,12 @@ export function runCommand(
   return new Promise((resolve, reject) => {
     const env = { ...process.env, ...options.env } as Record<string, string>;
 
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env,
-      shell: false, // never pass through shell — avoids injection
-    });
+    // Never use a shell (avoids injection) — except `npm` on Windows, which is a .cmd shim
+    // that cannot be spawned directly. Its args are always fixed constants in this codebase.
+    const useShell = process.platform === 'win32' && command === 'npm';
+    const child = useShell
+      ? spawn([command, ...args].join(' '), { cwd: options.cwd, env, shell: true })
+      : spawn(command, args, { cwd: options.cwd, env, shell: false });
 
     let stdout = '';
     let stderr = '';

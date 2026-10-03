@@ -7,6 +7,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
+import { realExit } from '../../utils/exit.js';
 import { AgentOrchestrator } from '../../agent/orchestrator.js';
 
 export async function runChat(): Promise<void> {
@@ -20,6 +21,16 @@ export async function runChat(): Promise<void> {
         '  Type "exit" or "quit" to exit.\n',
     ),
   );
+
+  // If stdin closes mid-prompt (piped input / EOF) the prompt never settles; make that a clean exit.
+  let busy = false;
+  let stdinClosed = false;
+  const onStdinClosed = (): void => {
+    stdinClosed = true;
+    if (!busy) realExit(0);
+  };
+  process.stdin.once('end', onStdinClosed);
+  process.stdin.once('close', onStdinClosed);
 
   const orchestrator = new AgentOrchestrator();
 
@@ -50,6 +61,7 @@ export async function runChat(): Promise<void> {
       break;
     }
 
+    busy = true;
     try {
       const response = await orchestrator.processUserMessage(trimmed, (progress) => {
         console.log(progress);
@@ -60,6 +72,9 @@ export async function runChat(): Promise<void> {
       console.error(
         chalk.red(`\nAgent error: ${err instanceof Error ? err.message : String(err)}\n`),
       );
+    } finally {
+      busy = false;
+      if (stdinClosed) realExit(0);
     }
   }
 }

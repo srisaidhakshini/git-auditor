@@ -28,6 +28,7 @@ import {
 } from '../../engines/secrets/rewriter.js';
 import { pushRewrittenHistory } from '../../engines/secrets/pusher.js';
 import { logger } from '../../utils/logger.js';
+import { isInteractive, pickRepo } from '../picker.js';
 
 export interface CleanOptions {
   dryRun?: boolean;
@@ -40,7 +41,16 @@ export interface CleanOptions {
 
 const DEFAULT_PATTERNS = ['.env', '.env.*', '*.pem', '*.key', 'id_rsa'];
 
-export async function runClean(repoName: string, options: CleanOptions): Promise<void> {
+export async function runClean(repoArg: string | undefined, options: CleanOptions): Promise<void> {
+  let repoName = repoArg;
+  if (!repoName) {
+    if (!isInteractive()) {
+      console.error(chalk.red('Error: specify a repository, e.g. repo-guardian clean my-repo'));
+      process.exit(1);
+    }
+    repoName = await pickRepo('Which repository do you want to clean?');
+  }
+
   const targetPatterns = options.patterns
     ? options.patterns.split(',').map((p) => p.trim())
     : DEFAULT_PATTERNS;
@@ -193,7 +203,7 @@ export async function runClean(repoName: string, options: CleanOptions): Promise
 
 export function registerCleanCommand(program: Command): void {
   program
-    .command('clean <repo>')
+    .command('clean [repo]')
     .description('Safely strip secrets from git history with dry-run and backup')
     .option('--dry-run', 'Preview which commits and files will be removed without modifying history')
     .option('--confirm', 'Confirm history rewrite without interactive prompt')

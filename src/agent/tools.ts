@@ -2,6 +2,8 @@
  * tools.ts — Tool definitions and execution dispatchers for the Agent Loop.
  */
 
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { AgentToolDefinition, AgentToolCall, AgentExecutionContext } from './types.js';
 import { resolveGitHubToken } from '../github/auth.js';
 import { listOwnedRepos, findRepo } from '../github/repos.js';
@@ -228,7 +230,10 @@ export async function executeAgentTool(
     }
 
     case 'init_prevention': {
-      const targetPath = (toolCall.input.target_path as string) || context.workingDir;
+      const targetPath = resolve((toolCall.input.target_path as string) || context.workingDir);
+      if (!existsSync(join(targetPath, '.git'))) {
+        return { error: `${targetPath} is not a git repository (no .git folder found).` };
+      }
       const gitignore = patchGitignore(targetPath);
       const hook = installPreCommitHook(targetPath);
 

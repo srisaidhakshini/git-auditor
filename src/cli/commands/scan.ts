@@ -21,6 +21,7 @@ import {
   renderHtmlReport,
 } from '../../report/formatter.js';
 import { runCommand } from '../../utils/shell.js';
+import { isInteractive, pickScanTarget } from '../picker.js';
 import { logger } from '../../utils/logger.js';
 import type { ScanReport, RepoReport } from '../../report/types.js';
 import type { GitHubRepo } from '../../github/repos.js';
@@ -78,11 +79,15 @@ export async function runScan(options: ScanOptions): Promise<void> {
   }
 
   if (!options.repo && !options.all) {
-    console.error(
-      chalk.red('Error: specify a target with --repo <name> or --all.\n') +
-        chalk.dim('Example: repo-guardian scan --repo myrepo --secrets-only'),
-    );
-    process.exit(1);
+    if (isInteractive()) {
+      Object.assign(options, await pickScanTarget());
+    } else {
+      console.error(
+        chalk.red('Error: specify a target with --repo <name> or --all.\n') +
+          chalk.dim('Example: repo-guardian scan --repo myrepo --secrets-only'),
+      );
+      process.exit(1);
+    }
   }
 
   // 1. Authenticate

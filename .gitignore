@@ -5,6 +5,8 @@ dist/
 node_modules/
 
 # Environment (NEVER commit real .env files)
+.env
+.env.*
 !.env.example
 !test/fixtures/**/.env
 
@@ -16,6 +18,7 @@ test/fixtures/**/.git/
 Thumbs.db
 
 # Editor
+.vscode/
 .idea/
 *.swp
 
@@ -28,11 +31,8 @@ npm-debug.log*
 
 # Test temp files
 tmp/
-config.bat
 
 # ─── Added by Repo Guardian Security Guardrails ─────────────
-.env
-.env.*
 *.pem
 *.key
 *.pfx

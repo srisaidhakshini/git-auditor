@@ -14,7 +14,7 @@ Repo Guardian finds leaked secrets (across full git history) and suspicious npm 
 4. [Installation](#-installation)
 5. [Authentication](#-authentication)
 6. [Command reference](#-command-reference)
-   - [`auth`](#repo-guardian-auth) · [`scan`](#repo-guardian-scan) · [`clean`](#repo-guardian-clean-repo) · [`init-prevention`](#repo-guardian-init-prevention) · [`chat`](#repo-guardian-chat)
+   - [menu](#run-with-no-arguments-interactive-menu) · [`auth`](#repo-guardian-auth) · [`scan`](#repo-guardian-scan) · [`clean`](#repo-guardian-clean-repo) · [`init-prevention`](#repo-guardian-init-prevention) · [`chat`](#repo-guardian-chat) · [`doctor`](#repo-guardian-doctor)
 7. [Recommended workflow](#-recommended-workflow)
 8. [Safety model](#-safety-model)
 9. [Files Repo Guardian writes](#-files-repo-guardian-writes)
@@ -135,6 +135,19 @@ Needed scopes: `repo`, `read:user`.
 
 Global: `repo-guardian --help`, `repo-guardian --version`, `repo-guardian <command> --help`.
 
+### Run with no arguments: interactive menu
+
+```bash
+repo-guardian
+```
+In a terminal this opens a menu (scan, clean, protect, chat, log in, doctor) so you never have to remember flags. Mistyped commands get a suggestion (`repo-guardian scn` → *Did you mean scan?*).
+
+**Interactive pickers:** in a terminal, `scan` with no `--repo/--all` asks whether to scan one repo or all, and `clean` with no repo shows a list of your repositories. In scripts/CI (no terminal) they print a usage error instead of prompting.
+
+### `repo-guardian doctor`
+
+Checks Node, git, GitHub login, `gitleaks`, `git-filter-repo`, `npm` and `ANTHROPIC_API_KEY`, and prints the fix for anything missing. Exits `1` only if a *required* check (Node, git, login) fails. Run it first if something isn't working.
+
 ### `repo-guardian auth`
 
 | Subcommand | Description |
@@ -147,7 +160,7 @@ Global: `repo-guardian --help`, `repo-guardian --version`, `repo-guardian <comma
 
 ### `repo-guardian scan`
 
-Read-only. Scans repositories for secrets and dependency problems. You must pass `--repo` or `--all`.
+Read-only. Scans repositories for secrets and dependency problems. Pass `--repo` or `--all` (or, in a terminal, choose interactively).
 
 | Option | Description |
 |---|---|
@@ -171,9 +184,9 @@ repo-guardian scan --all --refresh --timeout-seconds 120
 ```
 **Exit code:** `0` clean, `1` findings (or error).
 
-### `repo-guardian clean <repo>`
+### `repo-guardian clean [repo]`
 
-Removes sensitive files from a repo's **entire git history**. Works on a fresh temporary clone.
+Removes sensitive files from a repo's **entire git history**. Omit `[repo]` in a terminal to pick from a list. Works on a fresh temporary clone.
 
 | Option | Description |
 |---|---|
@@ -206,6 +219,8 @@ cd my-project && repo-guardian init-prevention
 repo-guardian init-prevention --path ../another-repo
 ```
 
+> `init-prevention` must run in a git repository root (it refuses otherwise and changes nothing). An existing `pre-commit` hook is kept as `pre-commit.pre-guardian` and still runs first, so installing Repo Guardian never removes your own hook.
+
 ### `repo-guardian chat`
 
 Conversational agent. Type `exit`, `quit`, `:q`, or press Ctrl-C to leave.
@@ -221,13 +236,15 @@ guardian> check dependencies in my-repo
 guardian> do a dry run of cleaning .env from my-repo
 guardian> set up prevention in this directory
 ```
+Without an API key the offline planner understands: list repos, scan secrets, audit dependencies, dry-run clean, and set up prevention (`... in <path>`). It asks which repo you mean if you don't say, and it never rewrites history or pushes from chat — for those it points you to `repo-guardian clean <repo>`.
+
 Available agent tools: `list_repositories`, `scan_secrets`, `scan_dependencies`, `rewrite_history` (supports `dry_run`), `push_rewritten_history`, `init_prevention`. Destructive ones prompt for confirmation every time.
 
 ---
 
 ## 🧭 Recommended workflow
 
-1. `repo-guardian auth login`
+1. `repo-guardian doctor`, then `repo-guardian auth login`
 2. `repo-guardian scan --all` – find what's wrong.
 3. **Rotate every leaked credential** at its provider.
 4. `repo-guardian clean <repo> --dry-run` – review what would be removed.
@@ -267,8 +284,8 @@ Available agent tools: `list_repositories`, `scan_secrets`, `scan_dependencies`,
 ```
 src/
 ├── cli/
-│   ├── index.ts, prompt.ts
-│   └── commands/           auth, scan, clean, init-prevention, chat
+│   ├── index.ts, menu.ts, picker.ts, prompt.ts
+│   └── commands/           auth, scan, clean, init-prevention, chat, doctor
 ├── github/                 auth (token resolution), device-flow, config, repos, cache, protection
 ├── engines/
 │   ├── secrets/            scanner (gitleaks + fallback), rewriter, pusher

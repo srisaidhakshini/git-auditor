@@ -29,6 +29,15 @@ export async function runInitPrevention(options: InitPreventionOptions): Promise
     process.exit(1);
   }
 
+  if (!existsSync(resolve(targetDir, '.git'))) {
+    console.error(
+      chalk.red(`Error: ${targetDir} is not the root of a git repository (no .git folder).
+`) +
+        chalk.dim('Run this from a repo root, or pass --path <repo>. Nothing was changed.'),
+    );
+    process.exit(1);
+  }
+
   // 1. Patch .gitignore
   console.log(chalk.cyan('📄 Checking and updating .gitignore...'));
   const gitignoreResult = patchGitignore(targetDir);
