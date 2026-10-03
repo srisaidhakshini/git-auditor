@@ -29,3 +29,16 @@ npm-debug.log*
 # Test temp files
 tmp/
 config.bat
+
+# ─── Added by Repo Guardian Security Guardrails ─────────────
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa*
+id_ed25519*
+secrets.json
+credentials.json
+.npmrc
