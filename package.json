@@ -7,9 +7,9 @@
     "repo-guardian": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "node init && tsc",
-    "dev": "node init && tsx src/cli/index.ts",
-    "start": "node init && node dist/cli/index.js",
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit"
